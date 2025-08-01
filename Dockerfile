@@ -1,42 +1,24 @@
-FROM oven/bun:1.2.15
+# Use Bun's official image
+FROM oven/bun:latest
 
-# Install system dependencies required for MediaSoup
-USER root
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    python3 \
-    python3-pip \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
 
-# Copy package files first for better caching
-COPY package.json bun.lockb ./
+# Copy package.json and bun.lockb if available
+COPY package.json ./
+
+# Optional: If you have bun.lockb (after running `bun install`)
+
 
 # Install dependencies
 RUN bun install
 
-# Copy source code
+# Copy the rest of your app
 COPY . .
 
-# Build the application
-RUN bun run build
+# Expose the port your app runs on (adjust if needed)
+EXPOSE 3000
 
-# Rebuild MediaSoup native binaries for the container environment
-RUN npm rebuild mediasoup
+# Command to start the Bun app
+CMD ["bun", "run", "start"]
 
-# Create a non-root user for security
-RUN groupadd -r bunuser && useradd -r -g bunuser bunuser
-RUN chown -R bunuser:bunuser /app
-USER bunuser
-
-# Expose ports for HTTP API and Socket.IO
-EXPOSE 4500 4501
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:4500/api/health || exit 1
-
-CMD ["bun", "start"]
