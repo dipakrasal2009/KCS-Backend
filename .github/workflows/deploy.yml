@@ -1,48 +1,86 @@
-name: Deploy KCS Backend
+name: KCS Backend CI/CD
 
 on:
   push:
-    branches: [dev]
+    branches: [dev]     # Triggers workflow on push to dev branch
 
 jobs:
-  deploy:
+  build-test-deploy:
     runs-on: ubuntu-latest
 
+    env:
+      AWS_REGION: ap-south-1
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+    # 1. Checkout repo
+    - uses: actions/checkout@v4
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v1
+    # 2. Set up Bun
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: "latest"
 
-      - name: Install Deps
-        run: bun install
+    # 3. Install dependencies
+    - name: Install dependencies
+      run: bun install
 
-      - name: Run Tests
-        run: bun test || echo "Tests failed"
+    # 4. Build (includes tsc-alias for path alias fix)
+    - name: Build the app
+      run: bun run build
 
-      - name: Build
-        run: bun run build
+    # 5. Run tests
+    - name: Run tests
+      run: bun run test
 
-      - name: Docker Login
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+    # 6. Fetch .env contents from AWS Secrets Manager
+    - name: Load .env from Secrets Manager
+      id: load_env
+      uses: aws-actions/aws-secretsmanager-get-secrets@v2
+      with:
+        secret-ids: |
+          kcs-backend-prod-env      # Name of your AWS secret
+        parse-json-secrets: false   # We'll inject as raw string
 
-      - name: Build & Push Docker Image
-        run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/kcs-backend:latest .
-          docker push ${{ secrets.DOCKER_USERNAME }}/kcs-backend:latest
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ env.AWS_REGION }}
 
-      - name: SSH into EC2 & Deploy
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            docker pull ${{ secrets.DOCKER_USERNAME }}/kcs-backend:latest
-            docker stop kcs-backend || true && docker rm kcs-backend || true
-            docker run -d --name kcs-backend \
-              -p 3000:3000 \
-              --env-file /home/ubuntu/apps/kcs-backend/.env \
-              -v /home/ubuntu/apps/kcs-backend/logs:/app/logs \
-              ${{ secrets.DOCKER_USERNAME }}/kcs-backend:latest
+    # 7. Deploy via SSH to EC2 (write .env, restart PM2)
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: 22
+        script: |
+          cd /home/ubuntu/KCS-Backend
+
+          # Pull latest changes
+          git fetch --all
+          git reset --hard origin/dev
+
+          # Install server dependencies
+          bun install --production
+
+          # Build & alias-resolve again on server (for absolute safety)
+          bun run build
+
+          # Write the .env file from the secret
+          echo "${{ steps.load_env.outputs.kcs-backend-prod-env }}" > .env
+
+          # Ensure uploads/recordings dirs exist with proper permissions
+          sudo mkdir -p /app/uploads /app/recordings
+          sudo chown ubuntu:ubuntu /app/uploads /app/recordings
+
+          # Restart the backend app via PM2
+          pm2 reload ecosystem.config.cjs --env production --update-env
+
+          # Optional: Check health endpoint, fail deploy if unhealthy
+          curl -f http://localhost:4500/health
+
+    # 8. (Optional) Slack or Email on Success/Failure
+    # Add notification steps here if desired
+
