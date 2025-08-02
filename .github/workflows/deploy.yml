@@ -39,7 +39,7 @@ jobs:
       uses: aws-actions/aws-secretsmanager-get-secrets@v2
       with:
         secret-ids: |
-          kcs-backend-prod-env      # Name of your AWS secret
+          kcs-backend-prod-env2      # Name of your AWS secret
         parse-json-secrets: false   # We'll inject as raw string
 
       env:
